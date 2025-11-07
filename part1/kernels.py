@@ -160,11 +160,11 @@ def matrix_transpose(a_tensor):
                 dst=a_tile
             )
 
-            res = nisa.nc_transpose(a_tile)
+            res_psum = nisa.nc_transpose(a_tile)
 
-            res_copy = nisa.tensor_copy(src=res)
+            res_sbuf = nisa.tensor_copy(src=res_psum)
             nisa.dma_copy(
-                src=res_copy,
+                src=res_sbuf,
                 dst=out[
                     n * tile_dim : (n + 1) * tile_dim,
                     m * tile_dim : (m + 1) * tile_dim,
@@ -174,6 +174,8 @@ def matrix_transpose(a_tensor):
     return out
 
 
+@nki.compiler.skip_middle_end_transformations
+@nki.jit
 def matrix_transpose_improved(a_tensor):
     M, N = a_tensor.shape
     out = nl.ndarray((N, M), dtype=a_tensor.dtype, buffer=nl.hbm)
@@ -181,24 +183,15 @@ def matrix_transpose_improved(a_tensor):
 
     assert M % tile_dim == N % tile_dim == 0, "Matrix dimensions not divisible by tile dimension!"
 
-    # TODO: Your implementation here. The only compute instruction you should use is `nisa.nc_transpose`.
     for m in nl.affine_range(M // tile_dim):
         for n in nl.affine_range(N // tile_dim):
-            a_tile = nl.ndarray((tile_dim, tile_dim), dtype=a_tensor.dtype, buffer=nl.sbuf)
+            res = nl.load_transpose2d(a_tensor[
+                m * tile_dim : (m + 1) * tile_dim,
+                n * tile_dim : (n + 1) * tile_dim,
+            ])
 
             nisa.dma_copy(
-                src=a_tensor[
-                    m * tile_dim : (m + 1) * tile_dim,
-                    n * tile_dim : (n + 1) * tile_dim,
-                ],
-                dst=a_tile
-            )
-
-            res = nisa.nc_transpose(a_tile)
-
-            res_copy = nisa.tensor_copy(src=res)
-            nisa.dma_copy(
-                src=res_copy,
+                src=res,
                 dst=out[
                     n * tile_dim : (n + 1) * tile_dim,
                     m * tile_dim : (m + 1) * tile_dim,

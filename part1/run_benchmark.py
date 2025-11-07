@@ -51,7 +51,7 @@ def benchmark_kernel(kernel, *args, profile_name=None):
     # run without benchmarking to verify correctness
     out = nki.baremetal(kernel)(*args)
     # expected result by numpy
-    if kernel == matrix_transpose:
+    if kernel in (matrix_transpose, matrix_transpose_improved):
         out_np = args[0].T
     else:
         out_np = args[0] + args[1]
@@ -90,7 +90,7 @@ def main():
 
     # Generate random input arrays
     kernel = name_to_kernel[args.kernel]
-    if kernel == matrix_transpose:
+    if kernel in (matrix_transpose, matrix_transpose_improved):
         mat = np.random.rand(args.m or args.n, args.n).astype(np.float32)
         kernel_args = [mat]
         print(f"\nRunning {kernel.__name__} with shape {mat.shape}")
