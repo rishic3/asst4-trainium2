@@ -136,7 +136,7 @@ In other words, when loading a tensor from HBM to SBUF, the partition dimension 
 
 As a result, in the code above, since `a_vec` and `b_vec` are 1D vectors, their only dimension is the partition dimension, and thus their size is limited to 128 elements.  In other words the code only works for vector sizes 128 or less.
 
-### Step 1: Chunking Vectors to Parallelize Across 128 Compute Lanes
+### Step 1: Chunking Vectors to Parallelize Across 128 Compute Lanes (6 points)
 
 To fix the code to work for vectors with a size greater than 128, we need to load the vectors in chunks (subsets of the original tensor). 
 
@@ -190,11 +190,11 @@ Normally, `affine_range` lets the NKI compiler more aggressively optimize loop i
 
    What was the execution time in microseconds (μs)?
 
-3. Remember that the maximum partition size (number of rows) that can be loaded at once on a NeuronDevice is 128. Inside `kernels.py`, change `vector_add_tiled` so that it uses *row_chunk = 128*. Record the execution time in microseconds (μs) for `vector_add_tiled` with the *row_chunk = 128* operating on a vector size of 25600. How much faster is `vector_add_tiled` on a vector size of 25600 when *row_chunk = 128* compared to when *row_chunk = 1*? Why do you think it is faster?  (*Hint:* you should think of the execution as loading `ROW_CHUNK` elements in parallel from HBM and then performing a `ROW_CHUNK` wide vector add on the vectors in SBUF.)
+2. Remember that the maximum partition size (number of rows) that can be loaded at once on a NeuronDevice is 128. Inside `kernels.py`, change `vector_add_tiled` so that it uses *row_chunk = 128*. Record the execution time in microseconds (μs) for `vector_add_tiled` with the *row_chunk = 128* operating on a vector size of 25600. How much faster is `vector_add_tiled` on a vector size of 25600 when *row_chunk = 128* compared to when *row_chunk = 1*? Why do you think it is faster?  (*Hint:* you should think of the execution as loading `ROW_CHUNK` elements in parallel from HBM and then performing a `ROW_CHUNK` wide vector add on the vectors in SBUF.)
 	
-4. Try running `vector_add_tiled` on vector sizes of 25600 when *row_chunk = 256*. You should see an error. In one sentence, explain why you get an error when trying to run *row_chunk = 256*.
+3. Try running `vector_add_tiled` on vector sizes of 25600 when *row_chunk = 256*. You should see an error. In one sentence, explain why you get an error when trying to run *row_chunk = 256*.
 
-### Step 2a: Improved Data Streaming
+### Step 2a: Improved Data Streaming (4 points)
 
 So far, we have been able to exploit the fact that the Vector Engine can perform computation with all 128 vector lanes in parallel, with each lane streaming a single element to/from a single SBUF/PSUM partition.
 
@@ -262,7 +262,7 @@ def vector_add_stream(a_vec, b_vec):
    
    How much faster is `vector_add_stream` with the *FREE_DIM* number you chose than `vector_add_stream` with *FREE_DIM = 2*? How much faster is `vector_add_stream` with the *FREE_DIM* number you chose than `vector_add_tiled` with *row_chunk = 128*?
 
-### Step 2b: Learning to Use Neuron-Profile
+### Step 2b: Learning to Use Neuron-Profile (5 points)
 
 There is a trade-off in choosing a tile's free dimension size:
 1. Too small of a tile size exposes significant instruction overhead leading to inefficient engine execution.
@@ -354,7 +354,7 @@ For this task, you will need to use the profiling tool for NeuronDevices: `neuro
    Feel free to also play around with various functionalities in the `neuron-profile` GUI. You may also want to look at the `Summary` tab located at the bottom toolbar. This tab displays the same brief summary of execution metrics we saw when running  
    `neuron-profile view --output-format summary-text ...` in Question 2. Feel free to learn more about `neuron-profile` functionality from the [user guide](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/tools/neuron-sys-tools/neuron-profile-user-guide.html) and interesting performance metrics for NKI kernels from the [NKI performance guide](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/general/nki/nki_perf_guide.html).
 
-### Step 3: Matrix Transpose
+### Step 3: Matrix Transpose (15 points = 10 coding + 5 writeup (+ 1 EC))
 ### Matrix Operations on a NeuronCore
 Before you begin, we will demonstrate how to perform matrix operations on a NeuronCore. As discussed earlier, a NeuronCore is equipped with various compute engines, each optimized for specific types of arithmetic operations. The Tensor Engine on Trainium is specifically designed to accelerate these matrix operations, such as matrix multiplication and matrix transpose. 
 
@@ -612,7 +612,10 @@ To check the correctness and performance of your implementation of Conv2D kernel
 The test harness will run correctness tests first, and run performance checks next. A full-credit solution must achieve performance within 120% of the reference kernel while maintaining correctness. It will invoke your kernel with input tensors having data types float32 and float16, with the performance requirements for float16 being more strict. Make sure you write your kernels keeping this in mind!
 
 #### Writeup and Profiling
-Students are required to submit a write up briefly describing their implementations. Also describe how you went about optimizing your implementation. Make sure to profile your implementation, and report the achieved MFU (Model FLOPs Utilization), with both `float16` and `float32` data types. You can so by running `neuron-profile view -n [your_profile_name].neff -s [your_profile_name].ntff`. Run the test harness with the `--profile <profile_name>` flag to capture a trace.
+Students are required to submit a write up briefly describing their implementations. Also describe how you went about optimizing your implementation. Make sure to profile your implementation, and report the achieved MFU (Model FLOPs Utilization), with both `float16` and `float32` data types. You can do so by running the test harness with the `--profile <profile_name>` flag to capture a trace, and then running
+```
+neuron-profile view -n [profile_name].neff -s [profile_name].ntff
+```
 
 > [!TIP]
 > When you open the profiler, you might see some warnings about missing benchmarking parameters. The only parameter you need to submit here is the MFU value, which is still available by mousing over the "Cumulative Utilization" line in the Estimated MFU section of the GUI, as seen below. (Make sure to take the MFU at the very end.)
@@ -639,25 +642,25 @@ Students are required to submit a write up briefly describing their implementati
 
 
 ## Extra Credit
-Run neuron-profile again on smaller images. Is there a difference in MFU between smaller and larger images? If so, how would you optimize your fused convolution layer for smaller images? Consider the maximum dimensions of PSUM/matmuls and how the dimensions of each tile are mapped onto the chip.
+Run `neuron-profile` again on smaller images. Is there a difference in MFU between smaller and larger images? If so, how would you optimize your fused convolution layer for smaller images? (It might help to know that `nisa.nc_matmul` can accept a >2D tensor as the `moving` argument, as long as the hardware constraints of PSUM are respected.)
 
 Up to five points of extra credit will be awarded for solutions that meet the performance goal for smaller images (a stricter target). Your write-up must clearly explain your approach and the steps you took to optimize your solution.
 
-It’s possible that your current solution already meets this requirement without the hint -- if that's the case, great job! Please still make sure to thoroughly discuss your approach.
-
 ## Grading Guidelines
 
-For the correctness test, we use two types of images. The first type is a small image with dimensions of 32×16. The second type is a large image with dimensions of 224×224, which exceeds the capacity of the SBUF and cannot fit within it all at once.
+For the correctness test, we use two types of images. The first type is a small image with dimensions of 32×16. The second type is a large image with dimensions of 224×224, which exceeds the capacity of the SBUF and cannot fit within it all at once. Your code must pass all correctness tests in order to earn performance points.
 
-For the performance test, we evaluate the performance under different configurations: with and without maxpool, and using float16 versus float32 precision. We will compare the performance of your program with the reference solution.
+For the performance test, we evaluate your kernel's performance against the reference kernel under different configurations: with and without maxpool, using float16 and float32 precision.
 
-As an intermediate goal, we include latencies for an unoptimized version of the reference kernel. You will be granted 90% of the performance points if your p99 latency is within 120% of the unoptimized reference latency. You will be granted full performance points if it is within 120% of the optimized reference latency.
+As an intermediate goal, we include relaxed latencies from an unoptimized version of the reference kernel. You will be granted 90% of the performance points if your p99 latency is within 120% of the relaxed latency. You will be granted full performance points if it is within 120% of the optimized reference latency.
 
 There is only one performance threshold set for the EC part, which is 120% of the reference latency.
 
-**Write Up: 40 Points**
-  - Part 1 Questions: 30 Points
+**Write Up: 30 Points**
+  - Part 1 Questions: 20 Points
   - Part 2 Questions: 10 Points
+
+**Correctness of Matrix Transpose Kernel: 10 points (+1 Point Performance EC)**
 
 **Correctness of Fused Convolution - MaxPool Kernel: 10 Points**
   - With Small Images: 2.5 points
@@ -665,7 +668,7 @@ There is only one performance threshold set for the EC part, which is 120% of th
   - With Bias Addition: 2.5 points
   - With Max Pool: 2.5 points
 
-**Performance of Fused Convolution - MaxPool Kernel: 50 Points + 5 Points EC**
+**Performance of Fused Convolution - MaxPool Kernel: 50 Points (+5 Points EC)**
   - Without Max Pool (float16): 17.5 points
   - Without Max Pool (float32): 17.5 points
   - With Max Pool (float16): 7.5 points
@@ -680,4 +683,6 @@ There is only one performance threshold set for the EC part, which is 120% of th
 Please submit your work using Gradescope. If you are working with a partner please remember to tag your partner on Gradescope.
 
 1. **Please submit your writeup as the file `writeup.pdf`.**
-2. **Please submit `conv2d.py` from part 2.**
+2. **Please run `sh create_submission.sh` to generate a `asst4.tar.gz` to submit to gradescope.** If the script errors saying 'Permission denied', you should run `chmod +x create\_submission.sh` and then try rerunning the script. Please also double check that the generated `tar.gz` includes:
+  * the file `kernels.py` containing your transpose kernel from part 1.
+  * the file `conv2d.py` containing your fused Conv2D kernel from part 2.

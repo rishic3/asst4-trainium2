@@ -85,10 +85,9 @@ def test_correctness_conv2d_kernel(
 
                         if not np.allclose(out, out_ref):
                             print(
-                                f"Output mismatch for {input_channels=}, {output_channels=}, {kernel_size=}"
+                                f"Output mismatch for {input_channels=}, {output_channels=}, {kernel_size=}, "
                                 f"{batch_size=}, {image_dims=}, {use_bias=}, {use_maxpool=}"
                             )
-
                             return False
 
     return True
@@ -173,15 +172,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "--test_maxpool", action="store_true", help="Use smaller images for testing"
+        "--test_maxpool", action="store_true", help="Run the kernel with pool_size=2"
     )
     parser.add_argument(
-        "--profile", type=str, default=None, help="File to save the neff file"
+        "--profile", type=str, default=None, help="File to save the .neff file"
     )
     parser.add_argument(
         "--simulate",
         action="store_true",
-        help="Use nki.simulate_kernel to run student implementation",
+        help="Use nki.simulate_kernel to run student implementation on CPU",
     )
     parser.add_argument(
         "--seed", type=int, default=42, help="Seed for random number generation"
@@ -236,6 +235,10 @@ if __name__ == "__main__":
             print("Passed 😎")
         else:
             print("Failed 😢")
+    
+    if correctness_score < 2.5 * len(correctness_tests):
+        print("Correctness failed, skipping performance tests.")
+        exit()
     
     # --------- PERFORMANCE TESTS ---------
     performance_tests = [
