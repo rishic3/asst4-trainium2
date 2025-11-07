@@ -174,6 +174,7 @@ def matrix_transpose(a_tensor):
     return out
 
 
+# 836 us
 @nki.compiler.skip_middle_end_transformations
 @nki.jit
 def matrix_transpose_improved(a_tensor):
