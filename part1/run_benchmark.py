@@ -15,6 +15,7 @@ from kernels import (
     vector_add_tiled,
     vector_add_stream,
     matrix_transpose,
+    matrix_transpose_improved,
 )
 import subprocess
 import neuronxcc.nki as nki
@@ -78,6 +79,7 @@ def main():
         "tiled": vector_add_tiled,
         "stream": vector_add_stream,
         "transpose": matrix_transpose,
+        "transpose_improved": matrix_transpose_improved,
     }
     parser = argparse.ArgumentParser(formatter_class=RawTextHelpFormatter)
     parser.add_argument("--kernel", type=str, choices=name_to_kernel.keys(), required=True)

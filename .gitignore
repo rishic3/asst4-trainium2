@@ -1,0 +1,4 @@
+influxdata-archive_compat.key
+__pycache__
+*.ntff
+*.neff
