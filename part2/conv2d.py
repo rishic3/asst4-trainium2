@@ -67,10 +67,15 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
     c_in_pmax = nl.tile_size.pmax
     n_tiles_c_in = in_channels // c_in_pmax
     
-    # 128 in/out channels per tile, 2 rows at a time
+    # in/out channels per tile
     IC_TILE = c_in_pmax
     OC_TILE = c_in_pmax
+
+    # output strip size per tile
     H_TILE = 2
+    SMALL_IMG_THRESH = 64 * 64
+    if out_height * out_width <= SMALL_IMG_THRESH:
+        H_TILE = min(out_height, 512 // out_width)
 
     n_oc_tiles = out_channels // OC_TILE
     n_ic_tiles = in_channels // IC_TILE
