@@ -6,7 +6,6 @@ import neuronxcc.nki.language as nl
 import neuronxcc.nki.isa as nisa
 from neuronxcc.nki import baremetal
 
-
 """
 A fused convolution - maxpool kernel that you need to implement for Part 2.
 
@@ -36,7 +35,7 @@ The shape of the output should be [batch_size, out_channels, out_pool_height, ou
 @nki.compiler.skip_middle_end_transformations
 @nki.jit
 def fused_conv2d_maxpool(X, W, bias, pool_size=1):
-
+    
     batch_size, in_channels, input_height, input_width = X.shape
     out_channels, in_channels_, filter_height, filter_width = W.shape
     out_channels_ = bias.shape[0]
@@ -67,141 +66,158 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
     # Various tiling dimensions (You may want to define more of them)
     c_in_pmax = nl.tile_size.pmax
     n_tiles_c_in = in_channels // c_in_pmax
+    
+    # 128 in/out channels per tile, 2 rows at a time
+    IC_TILE = c_in_pmax
+    OC_TILE = c_in_pmax
+    H_TILE = 2
 
-    tile_c_in = c_in_pmax
-    tile_c_out = nl.tile_size.gemm_stationary_fmax
-    rows_per_block = pool_size if pool_size > 1 else 1
-    num_row_blocks = out_height // rows_per_block
-    bias_2d = bias.reshape((out_channels, 1))
-
-    for b in nl.affine_range(batch_size):
-        for oc_block in nl.affine_range(out_channels // tile_c_out):
-            c_out_start = oc_block * tile_c_out
-            c_out_end = c_out_start + tile_c_out
-
-            bias_tile = nl.ndarray((tile_c_out, 1), dtype=bias.dtype, buffer=nl.sbuf)
-            nisa.dma_copy(
-                src=bias_2d[c_out_start:c_out_end],
-                dst=bias_tile,
+    n_oc_tiles = out_channels // OC_TILE
+    n_ic_tiles = in_channels // IC_TILE
+    n_h_tiles = out_height // H_TILE
+    
+    # hold all weights (transposed) in sbuf
+    w_tr_sbuf = nl.ndarray(
+        shape=(IC_TILE, OC_TILE, n_ic_tiles, n_oc_tiles, filter_height, filter_width),
+        dtype=X.dtype,
+        buffer=nl.sbuf
+    )
+    
+    # allocate biases in sbuf
+    bias_sbuf = nl.ndarray(
+        shape=(OC_TILE, n_oc_tiles),
+        dtype=nl.float32,
+        buffer=nl.sbuf
+    )
+    
+    # preload and transpose all weights into sbuf, matmuls will consume directly
+    for oc_tile_idx in nl.affine_range(n_oc_tiles):
+        oc_start = oc_tile_idx * OC_TILE
+        oc_end = (oc_tile_idx + 1) * OC_TILE
+        
+        # load bias for this output channel tile
+        nisa.dma_copy(
+            dst=bias_sbuf[:, oc_tile_idx],
+            src=bias[oc_start:oc_end]
+        )
+        
+        # for each input-channel tile we will copy weights to sbuf and transpose once
+        for ic_tile_idx in nl.affine_range(n_ic_tiles):
+            ic_start = ic_tile_idx * IC_TILE
+            ic_end = (ic_tile_idx + 1) * IC_TILE
+            
+            # weight buffer for this (oc tile, ic tile)
+            w_raw_sbuf = nl.ndarray(
+                shape=(OC_TILE, IC_TILE, filter_height, filter_width),
+                dtype=X.dtype,
+                buffer=nl.sbuf
             )
 
-            for block_idx in nl.affine_range(num_row_blocks):
-                row_buffer = nl.ndarray(
-                    (tile_c_out, rows_per_block * out_width),
+            nisa.dma_copy(
+                dst=w_raw_sbuf,
+                src=W[oc_start:oc_end, ic_start:ic_end, :, :]
+            )
+            
+            # transpose the [oc, ic] matrix (becomes [ic, oc]) for each spatial position
+            # store into weight buffer that lives for entire kernel
+            for kernel_row in nl.affine_range(filter_height):
+                for kernel_col in nl.affine_range(filter_width):
+                    w_slice = w_raw_sbuf[:, :, kernel_row, kernel_col]
+                    # tensor engine transpose, to psum
+                    w_slice_tr_psum = nisa.nc_transpose(data=w_slice)
+                    w_tr_sbuf[:, :, ic_tile_idx, oc_tile_idx, kernel_row, kernel_col] = nisa.tensor_copy(w_slice_tr_psum, dtype=w_raw_sbuf.dtype)
+    
+    # convolution + maxpool
+    for batch_idx in nl.affine_range(batch_size):
+        for oc_tile_idx in nl.affine_range(n_oc_tiles):
+            oc_start = oc_tile_idx * OC_TILE
+            oc_end = (oc_tile_idx + 1) * OC_TILE
+            
+            for h_tile_idx in nl.affine_range(n_h_tiles):
+                h_start = h_tile_idx * H_TILE
+                h_end = (h_tile_idx + 1) * H_TILE
+                
+                # need extra rows for filter window
+                # e.g. 2 out rows, 3x3 filter => 4 input rows
+                in_patch_h = H_TILE + filter_height - 1
+
+                # load all ic tiles once upfront here into X_sbuf, reused all oc tiles
+                # note: moved block dimension into free dimension here (ic_tile first in shape) to
+                # avoid warning block dimension deprecation warning
+                X_sbuf = nl.ndarray(
+                    shape=(nl.par_dim(IC_TILE), n_ic_tiles, in_patch_h, input_width),
                     dtype=X.dtype,
-                    buffer=nl.sbuf,
+                    buffer=nl.sbuf
                 )
-
-                for row_in_block in nl.affine_range(rows_per_block):
-                    out_row = block_idx * rows_per_block + row_in_block
-                    res_psum = nl.zeros(
-                        (tile_c_out, out_width), nl.float32, buffer=nl.psum
-                    )
-
-                    for fh in nl.affine_range(filter_height):
-                        h_idx = out_row + fh
-                        for fw in nl.affine_range(filter_width):
-                            w_start = fw
-                            for cin_block in nl.affine_range(n_tiles_c_in):
-                                c_in_start = cin_block * tile_c_in
-                                c_in_end = c_in_start + tile_c_in
-
-                                rhs_tile = nl.ndarray(
-                                    (tile_c_in, out_width),
-                                    dtype=X.dtype,
-                                    buffer=nl.sbuf,
-                                )
-                                w_tile = nl.ndarray(
-                                    (tile_c_out, tile_c_in),
-                                    dtype=W.dtype,
-                                    buffer=nl.sbuf,
-                                )
-
-                                w_slice = W[
-                                    c_out_start:c_out_end,
-                                    c_in_start:c_in_end,
-                                    fh,
-                                    fw,
-                                ]
-                                nisa.dma_copy(src=w_slice, dst=w_tile)
-
-                                w_tile_psum = nisa.nc_transpose(w_tile)
-                                lhs_tile = nisa.tensor_copy(
-                                    src=w_tile_psum, dtype=W.dtype
-                                )
-
-                                x_slice = X[
-                                    b,
-                                    c_in_start:c_in_end,
-                                    h_idx,
-                                    w_start : w_start + out_width,
-                                ]
-                                nisa.dma_copy(src=x_slice, dst=rhs_tile)
-
-                                res_psum += nisa.nc_matmul(lhs_tile, rhs_tile)
-
-                    row_tile = nl.copy(res_psum, dtype=X.dtype)
-                    row_offset = row_in_block * out_width
+                for ic_tile_idx in nl.affine_range(n_ic_tiles):
+                    ic_start = ic_tile_idx * IC_TILE
+                    ic_end = (ic_tile_idx + 1) * IC_TILE
                     nisa.dma_copy(
-                        src=row_tile,
-                        dst=row_buffer[:, row_offset : row_offset + out_width],
+                        dst=X_sbuf[:, ic_tile_idx, :, :],
+                        src=X[batch_idx, ic_start:ic_end, h_start:h_end + filter_height - 1, :]
                     )
+                
+                # accumulator for this (batch, oc tile, h tile) region
+                acc_psum = nl.zeros(
+                    shape=(OC_TILE, H_TILE, out_width),
+                    dtype=nl.float32,
+                    buffer=nl.psum
+                )
+                
+                # accumulation loop
+                # contributions from all ic tiles, filter positions
+                for ic_tile_idx in nl.affine_range(n_ic_tiles):
+                    for f_row in nl.affine_range(filter_height):
+                        for f_col in nl.affine_range(filter_width):
+                            # pre-transposed weight slice for this tile
+                            # IC_TILE x OC_TILE
+                            w_tile_tr = w_tr_sbuf[:, :, ic_tile_idx, oc_tile_idx, f_row, f_col]
+                            
+                            # shifted input window for filter pos
+                            # (0,0) -> rows[0:2], cols[0:out_width]
+                            # (0,1) -> rows[0:2], cols[1:out_width+1]
+                            # (1,0) -> rows[1:3], cols[0:out_width]
+                            #...
+                            # IC_TILE x H_TILE * out_width
+                            x_win = X_sbuf[:, ic_tile_idx, f_row:f_row + H_TILE, f_col:f_col + out_width]
+                            acc_psum += nisa.nc_matmul(w_tile_tr, x_win)
 
-                if pool_size == 1:
-                    for w in nl.affine_range(out_width):
-                        col = row_buffer[:, w : w + 1]
-                        biased = nisa.tensor_scalar(col, nl.add, bias_tile)
-                        nisa.dma_copy(src=biased, dst=row_buffer[:, w : w + 1])
+                if pool_size == 2:
+                    # expand dims per tile
+                    # 128 x 2 x out_width -> 128 x 1 x 2 x out_width//2 x 2
+                    acc_psum_shape = (OC_TILE, H_TILE // pool_size, pool_size, out_pool_width, pool_size)
+                    acc_for_pool = acc_psum.reshape(shape=acc_psum_shape)
+                    pooled_psum = nisa.tensor_reduce(
+                        op=nki.language.maximum,
+                        data=acc_for_pool,
+                        axis=(2, 4)
+                    )  # 128 x 1 x out_width//2
 
-                    dest = X_out[
-                        b,
-                        c_out_start:c_out_end,
-                        block_idx,
-                        :,
-                    ]
+                    pooled_sbuf = nisa.tensor_copy(pooled_psum, dtype=X.dtype)
+                    pooled_plus_bias = nisa.tensor_tensor(
+                        pooled_sbuf,
+                        bias_sbuf[:, oc_tile_idx],  # 128 x 1
+                        nki.language.add
+                    )
+                    
+                    # copy to output, pooled coordinates are squashed by pool size
+                    pooled_h_start = h_tile_idx * (H_TILE // pool_size)
+                    pooled_h_end = (h_tile_idx + 1) * (H_TILE // pool_size)
                     nisa.dma_copy(
-                        src=row_buffer[:, 0:out_width],
-                        dst=dest,
+                        dst=X_out[batch_idx, oc_start:oc_end, pooled_h_start:pooled_h_end, :],
+                        src=pooled_plus_bias
                     )
                 else:
-                    pooled_tile = nl.ndarray(
-                        (tile_c_out, out_pool_width),
-                        dtype=X.dtype,
-                        buffer=nl.sbuf,
+                    # just add bias in sbuf and copy to out
+                    conv_sbuf = nisa.tensor_copy(acc_psum, dtype=X.dtype)
+                    conv_plus_bias = nisa.tensor_tensor(
+                        conv_sbuf,
+                        bias_sbuf[:, oc_tile_idx],
+                        nki.language.add
                     )
-
-                    for pw in nl.affine_range(out_pool_width):
-                        base = pw * pool_size
-                        row0_col0 = row_buffer[:, base : base + 1]
-                        row0_col1 = row_buffer[:, base + 1 : base + 2]
-                        row0_max = nisa.tensor_tensor(row0_col0, row0_col1, op=nl.max)
-
-                        row1_base = out_width + base
-                        row1_col0 = row_buffer[:, row1_base : row1_base + 1]
-                        row1_col1 = row_buffer[:, row1_base + 1 : row1_base + 2]
-                        row1_max = nisa.tensor_tensor(row1_col0, row1_col1, op=nl.max)
-
-                        pooled_col = nisa.tensor_tensor(row0_max, row1_max, op=nl.max)
-                        nisa.dma_copy(
-                            src=pooled_col,
-                            dst=pooled_tile[:, pw : pw + 1],
-                        )
-
-                    for w in nl.affine_range(out_pool_width):
-                        col = pooled_tile[:, w : w + 1]
-                        biased = nisa.tensor_scalar(col, nl.add, bias_tile)
-                        nisa.dma_copy(src=biased, dst=pooled_tile[:, w : w + 1])
-
-                    dest = X_out[
-                        b,
-                        c_out_start:c_out_end,
-                        block_idx,
-                        :,
-                    ]
                     nisa.dma_copy(
-                        src=pooled_tile,
-                        dst=dest,
+                        dst=X_out[batch_idx, oc_start:oc_end, h_start:h_end, :],
+                        src=conv_plus_bias
                     )
-
+    
     return X_out
-
