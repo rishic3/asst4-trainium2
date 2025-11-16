@@ -531,6 +531,9 @@ Now, our objective is to map the convolution operator onto the high-performance 
 
 In class we discussed one way to convert convolution with many filters into a single large matrix multiplication.  We'll do the same thing here, but take a different approach that yields an efficient implementation on Trainium.  In this approach the convolution operation is formulated as a series of independent matrix multiplications. A visual illustration of this formulation is shown below.
 
+> [!NOTE]
+> **This is a different conv -> matmul reduction than the one described in lecture that creates a separate row for every spatial patch.**
+
 <p align="center">
   <img src="/handout/conv2d_matmul_diagram.png" width=100% height=100%>
 </p>
@@ -611,6 +614,8 @@ To check the correctness and performance of your implementation of Conv2D kernel
 
 The test harness will run correctness tests first, and run performance checks next. A full-credit solution must achieve performance within 120% of the reference kernel while maintaining correctness. It will invoke your kernel with input tensors having data types float32 and float16, with the performance requirements for float16 being more strict. Make sure you write your kernels keeping this in mind!
 
+Note that your kernel will be tested for performance *without* `--profile` (which slightly changes execution time) in order to be consistent with how performance thresholds are set.
+
 #### Writeup and Profiling
 Students are required to submit a write up briefly describing their implementations. Also describe how you went about optimizing your implementation. Make sure to profile your implementation, and report the achieved MFU (Model FLOPs Utilization), with both `float16` and `float32` data types. You can do so by running the test harness with the `--profile <profile_name>` flag to capture a trace, and then running
 ```
@@ -652,7 +657,7 @@ For the correctness test, we use two types of images. The first type is a small 
 
 For the performance test, we evaluate your kernel's performance against the reference kernel under different configurations: with and without maxpool, using float16 and float32 precision.
 
-As an intermediate goal, we include relaxed latencies from an unoptimized version of the reference kernel. You will be granted 90% of the performance points if your p99 latency is within 120% of the relaxed latency. You will be granted full performance points if it is within 120% of the optimized reference latency.
+As an intermediate goal, we include relaxed latencies from an unoptimized version of the reference kernel. You will be granted 95% of the performance points if your p99 latency is within 120% of the relaxed latency. You will be granted full performance points if it is within 120% of the optimized reference latency.
 
 There is only one performance threshold set for the EC part, which is 120% of the reference latency.
 
